@@ -1,0 +1,277 @@
+__module_name__ = "pyTinyUrl"
+__module_version__ = "0.9"
+__module_description__ = "Make tinyurl from outgoing urls and send it to current channel instead of the long url"
+
+############
+##
+## Written by Will Pittenger
+##
+## Distributed under the CC-BY-SA-3.0 license.
+##
+############
+
+import hexchat
+import urllib.request
+import re
+
+
+######
+######
+# This regular expression is how we detect URLs
+######
+######
+
+regex_for_url: str = r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+" # r"https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~?&\/\/=]*)"
+
+
+#####
+#####
+# regex_tinyurl_preview_link_syntax Used to locate the preview url.  The preview URL is the only way to locate the ID using only regular expressions.
+#####
+#####
+
+regex_tinyurl_preview_link_syntax: str = r"https?://preview\.tinyurl\.com/[a-z0-9]+"
+
+
+#####
+#####
+# regex_tinyurl_preview_param Used to locate the ID inside the preview URL
+#####
+#####
+
+regex_tinyurl_preview_param: str = r"/([a-z0-9]+)$"
+
+
+#####
+#####
+#
+##### usePreviewURLs With no parameters, returns whether or not the preview feature is on or off.	 With a boolean, integer (0 or 1), or a string ("true" or "false") as the only parameter, changes the preference.
+#####
+
+def usePreviewURLs(newState = None) -> bool:
+	pref_preview_on = __module_name__ + "use_preview_urls";
+
+	if newState == None:
+		existingState = bool(hexchat.get_pluginpref(pref_preview_on))
+
+		if existingState == None:
+			return False
+
+		return existingState
+
+	if isinstance(newState, int):
+		hexchat.set_pluginpref(pref_preview_on, (newState != 0))
+	elif isinstance(newState, str):
+		hexchat.set_pluginpref(pref_preview_on, (newState.lower() != "false" and newState != "" and newState != "0"))
+	elif isinstance(newState, bool):
+		hexchat.set_pluginpref(pref_preview_on, newState)
+	else:
+		raise Exception("in call to usePreviewURLs, newState was in an unsupported format: " + str(type(newState)))
+
+	return newState;
+
+
+#####
+#####
+# getTinyURL look up a tiny url
+#####
+#####
+
+def getTinyURL(strURL: str) -> str:
+	# encode URL to shorten
+	strEncodedURL = strURL.replace(":", "%3A").replace("/", "%2F").replace("#", "%23")
+
+	# fetch tinyurl result
+	sock = urllib.request.urlopen("http://tinyurl.com/create.php?url=" + strEncodedURL)
+	htmlSource = sock.read()
+	sock.close()
+
+	# parse out link
+	strPreviewLink = re.findall(regex_tinyurl_preview_link_syntax, str(htmlSource), re.IGNORECASE)[0]
+
+	if usePreviewURLs(None):
+		return strPreviewLink
+
+	return "http://tinyurl.com/" + re.findall(regex_tinyurl_preview_param, strPreviewLink, re.IGNORECASE)[0]
+
+
+######
+######
+# min_len_to_process Shortest URL to be processed
+######
+######
+
+def minLengthToProcess(newMinLen = None):
+	pref_min_len_to_process = __module_name__ + "min_len_to_process"
+
+	if newMinLen == None:
+		val = hexchat.get_pluginpref(pref_min_len_to_process)
+
+		if val == None:
+			hexchat.set_pluginpref(pref_min_len_to_process, 150)
+			return 150
+
+		return val
+
+	hexchat.set_pluginpref(pref_min_len_to_process, newMinLen)
+
+
+######
+######
+# If is_shortening_urls is true, the outgoing hooks will immediately return.
+
+is_shortening_urls: bool = False
+
+
+######
+######
+# handleOutgoingStatment Searches for URLs.	 If any are found,
+######
+######
+
+def handleOutgoingStatment(existing_string: str, cmd: str, dest: str = ""):
+	global is_shortening_urls
+	global regex_for_url
+
+	if is_shortening_urls:
+		return hexchat.EAT_NONE
+
+	result: str = existing_string;
+
+	matches: list = re.findall(regex_for_url, existing_string, re.IGNORECASE)
+
+	if matches == None or len(matches) == 0:
+
+		return hexchat.EAT_NONE;
+
+	for match in matches:
+
+		if len(match) >= minLengthToProcess():
+			result = result.replace(match, getTinyURL(match))
+
+	is_shortening_urls = True
+	hexchat.command(cmd + " " + result)
+	is_shortening_urls = False
+
+	return hexchat.EAT_ALL
+
+
+######
+######
+# onSay handler for /say
+######
+######
+
+def onSay(word: list, word_eol: list, userdata):
+	return handleOutgoingStatment(word_eol[1], "say")
+
+
+######
+######
+# onGenericSay handler for /say
+######
+######
+
+def onGenericSay(word: list, word_eol: list, userdata):
+	return handleOutgoingStatment(word_eol[0], "say")
+
+
+######
+######
+# onMe handler for /me
+######
+######
+
+def onMe(word: list, word_eol: list, userdata):
+	return handleOutgoingStatment(word_eol[1], "me")
+
+
+######
+######
+# onMsg handler for /msg
+######
+######
+
+def onMsg(word: list, word_eol: list, userdata):
+	return handleOutgoingStatment(word_eol[1], "msg", word[0])
+
+
+######
+######
+# onTopic handler for /topic
+######
+######
+
+def onTopic(word: list, word_eol: list, userdata):
+	return handleOutgoingStatment(word_eol[1], "topic", word[0])
+
+
+######
+######
+# onTinyUrl handler for /tinyurl
+######
+######
+
+def onTinyUrl(word: list, word_eol: list, userdata):
+	if len(word) < 2:
+		print ("you must specify a url eg, /tinyurl http://www.google.com/")
+	else:
+		# display
+		hexchat.command("say " + getTinyURL(word[1]))
+
+	return hexchat.EAT_ALL
+
+
+######
+######
+# onMinLenToShortenURLs Provides a way for the user to change min_len_to_process.	 No parameters displays the current value.
+######
+######
+
+def onMinLenToShortenURLs(word: list, word_eol: list, userdata):
+	if len(word) < 2:
+		hexchat.prnt("The current value is " + str(minLengthToProcess()))
+	else:
+		hexchat.prnt("Changing the value from " + str(minLengthToProcess()) + " to " + word[1] + ".")
+
+		minLengthToProcess(int(word[1]))
+
+	return hexchat.EAT_ALL
+
+
+######
+######
+# onPreviewURLs
+######
+######
+
+def onPreviewURLs(word: list, word_eol: list, userdata):
+	if len(word) == 1:
+		if usePreviewURLs():
+			hexchat.prnt("When generating TinyURLs, preview URLs will be output.")
+		else:
+			hexchat.prnt("When generating TinyURLs, normal URLs will be output")
+	else:
+		try:
+			usePreviewURLs(word[1])
+
+			onPreviewURLs([word[0]], [word[0]], userdata)
+		except Exception as e:
+			hexchat.prnt(e.args)
+
+# Register hooks
+hexchat.hook_command("TINYURL", onTinyUrl, help="/TINYURL <url>")
+hexchat.hook_command("SAY", onSay)
+hexchat.hook_command("", onGenericSay)
+hexchat.hook_command("ME", onMe)
+hexchat.hook_command("MSG", onMsg)
+hexchat.hook_command("TOPIC", onTopic)
+hexchat.hook_command("MIN_LEN_TO_SHORTEN_URLS", onMinLenToShortenURLs, help="/MIN_LEN_TO_SHORTEN_URLS [new-length]")
+hexchat.hook_command("USE_PREVIEW_TINYURLS", onPreviewURLs, help="/USE_PREVIEW_TINYURLS [new-value] #new-value can be 0, 1, true, false, or any string containing just 'true' or 'false'")
+
+hexchat.prnt(__module_name__ + " is ready")
+
+def unload(userdata):
+	hexchat.prnt(__module_name__ + " is now unloaded")
+
+hexchat.hook_unload(unload)
